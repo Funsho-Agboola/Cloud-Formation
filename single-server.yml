@@ -1,0 +1,121 @@
+Description: >
+  Udagram
+
+
+Parameters:
+  EnvironmentName:
+    Description: Env Name that will be prefixed in order to access Variables exported from our networking Resources
+    Type: String
+
+Resources:
+  LBSecGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow hhtp to Load Balanacer
+      VpcId:
+        Fn::ImportValue: !Sub "${EnvironmentName}-VPCID"
+      GroupName: Security Group for Load Balancer
+      SecurityGroupEgress:
+        - CidrIp: 0.0.0.0/0
+          FromPort: 80
+          ToPort: 80
+          IpProtocol: tcp
+      SecurityGroupIngress:
+        - CidrIp: 0.0.0.0/0
+          FromPort: 80
+          ToPort: 80
+          IpProtocol: tcp
+
+  WebServerSecGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow http / SSH only from local VPC
+      VpcId:
+        Fn::ImportValue: !Sub "${EnvironmentName}-VPCID"
+      GroupName: Security Group for WebServer internal traffic
+      SecurityGroupEgress:
+        - CidrIp: 0.0.0.0/0
+          FromPort: 0
+          ToPort: 65535
+          IpProtocol: tcp
+      SecurityGroupIngress:
+        - CidrIp: 0.0.0.0/0
+          FromPort: 80
+          ToPort: 80
+          IpProtocol: tcp
+        - CidrIp: 0.0.0.0/0
+          FromPort: 22
+          ToPort: 22
+          IpProtocol: tcp
+
+  BastionIamRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: "/"
+
+  BastionIamPolicies:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: fullAccess
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: "s3:*"
+            Resource: "*"
+      Roles:
+        - !Ref BastionIamRole
+
+  BastionIamInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: "/"
+      Roles:
+        - !Ref BastionIamRole
+
+  BastionEC20:
+    Type: AWS::EC2::Instance
+    DependsOn:
+        - WebServerSecGroup
+        - BastionIamInstanceProfile
+    Properties:
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            apt-get update -y
+            apt-get install unzip awscli -y
+            apt-get install apache2 -y
+            systemctl start apache2.service
+            sudo rm /var/www/html/index.html
+            sudo aws s3 cp s3://udacity-demo-1/udacity.zip /var/www/html
+            sudo unzip /var/www/html/udacity.zip -d /var/www/html
+            systemctl restart apache2.service
+        IamInstanceProfile: !Ref BastionIamInstanceProfile
+        SecurityGroupIds:
+        - Ref: WebServerSecGroup
+        SubnetId:
+          Fn::ImportValue: !Sub "${EnvironmentName}-PUB1-SN"
+        ImageId: ami-0d1cd67c26f5fca19
+        BlockDeviceMappings:
+          - DeviceName: "/dev/sdk"
+            Ebs:
+              VolumeSize: "10"
+              DeleteOnTermination: true
+              VolumeType: "gp2"
+        InstanceType: t3.small
+        KeyName: vino
+
+
+Outputs:
+  Website:
+    Description: The Public DNS for the EC2 Instance
+    Value: !Join ["", ["http://", !GetAtt [BastionEC20, PublicDnsName]]]
